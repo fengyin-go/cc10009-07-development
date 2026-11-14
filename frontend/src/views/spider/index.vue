@@ -38,6 +38,7 @@
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
           <th>当前状态</th>
+          <th>等待中请求</th>
           <th>可执行动作</th>
         </tr>
       </thead>
@@ -45,6 +46,7 @@
         <tr v-for="row in rows" :key="String(row.id)">
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
           <td>{{ row.status }}</td>
+          <td :class="{ 'warn-text': waitingCount(row) > 0 }">{{ waitingCount(row) }}</td>
           <td class="row-actions">
             <button
               v-for="action in actions"
@@ -58,20 +60,20 @@
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 2" class="empty-state">暂无采集任务数据，可先登记采集作业</td>
+          <td :colspan="columns.length + 3" class="empty-state">暂无采集任务数据，可先登记采集作业</td>
         </tr>
       </tbody>
     </table>
 
     <footer class="page-foot">
-      <span>共 {{ total }} 条采集任务记录</span>
+      <span>共 {{ total }} 条采集任务记录；等待中请求来自限速控制的令牌等待队列，每秒同步</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import {
   downloadEntries,
@@ -79,6 +81,7 @@ import {
   moduleMeta,
   runAction as applyAction,
 } from '@/api/local-service'
+import { recoverAllDue, waitingCountForSite } from '@/data/quota-store'
 import type { EntryRow } from '@/data/types'
 
 const meta = moduleMeta('spider')
@@ -133,5 +136,25 @@ function reload() {
   }
 }
 
-onMounted(reload)
+// 等待中请求：读限速控制的实时配额状态（模块级 reactive 单例，两边页面同一份数据），
+// 限速页有任务进入等待时这里同步刷新。
+function waitingCount(row: EntryRow): number {
+  return waitingCountForSite(String(row['目标站点'] ?? ''))
+}
+
+let timer: number | undefined
+
+onMounted(() => {
+  reload()
+  // 每秒推进一次冷却恢复：冷却结束令牌补满、等待任务补发后，等待数量同步下降
+  timer = window.setInterval(() => {
+    recoverAllDue()
+  }, 1000)
+})
+
+onBeforeUnmount(() => {
+  if (timer !== undefined) {
+    window.clearInterval(timer)
+  }
+})
 </script>
